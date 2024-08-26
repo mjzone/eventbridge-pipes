@@ -1,7 +1,9 @@
 const { Stack, Duration } = require('aws-cdk-lib');
 const dynamodb = require('aws-cdk-lib/aws-dynamodb');
 const lambda = require('aws-cdk-lib/aws-lambda');
+const { NodejsFunction } = require('aws-cdk-lib/aws-lambda-nodejs');
 const apigateway = require('aws-cdk-lib/aws-apigateway');
+const path = require('path');
 
 class SrcStack extends Stack {
   /**
@@ -13,20 +15,30 @@ class SrcStack extends Stack {
   constructor(scope, id, props) {
     super(scope, id, props);
 
-     // Orders DynamoDB table
+     // Orders DynamoDB Table
      const table = new dynamodb.Table(this, 'OrdersTable', {
       partitionKey: { name: 'orderId', type: dynamodb.AttributeType.STRING },
       stream: dynamodb.StreamViewType.NEW_IMAGE,
     });
 
-    // Lambda function
-    const apiLambda = new lambda.Function(this, 'ApiLambda', {
+    // Lambda Function
+    const apiLambda = new NodejsFunction(this, 'ApiLambda', {
       runtime: lambda.Runtime.NODEJS_20_X,
-      handler: 'api.handler',
-      code: lambda.Code.fromAsset('lambda'),
+      handler: 'index.handler',
+      entry: path.join(__dirname, '../lambda/api/index.js'),
+      bundling: {
+        minify: false,
+        sourceMap: false,
+      },
+      environment: {
+        ORDERS_TABLE_NAME: table.tableName,
+        STRIPE_SECRET_KEY: process.env.STRIPE_SECRET_KEY || "super-secret",
+      },
     });
     table.grantWriteData(apiLambda);
+    
 
+    // API Gateway 
     const api = new apigateway.LambdaRestApi(this, 'ECommerceApi', {
       handler: apiLambda,
       proxy: false
