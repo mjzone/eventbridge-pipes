@@ -1,4 +1,5 @@
 # My CDK App
+[![Deploy CDK Stack](https://github.com/mjzone/eventbridge-pipes/actions/workflows/deploy.yml/badge.svg?branch=main)](https://github.com/mjzone/eventbridge-pipes/actions/workflows/deploy.yml)
 
 ## Setup Instructions
 
