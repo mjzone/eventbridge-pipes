@@ -126,10 +126,6 @@ class SrcStack extends Stack {
           flightId: "<$.dynamodb.NewImage.flightId.S>",
           flightDetails: "<$.dynamodb.NewImage.flightDetails.M>",
           items: "<$.dynamodb.NewImage.items.L>",
-          metadata: {
-            status: "order-created",
-            createdAt: "$$.Timestamp",
-          }
         })
       },
       loggingConfig: {
