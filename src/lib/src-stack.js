@@ -1,5 +1,5 @@
 const { Stack } = require("aws-cdk-lib");
-const dynamodb = require("aws-cdk-lib/aws-dynamodb");
+const { dynamodb, BillingMode } = require("aws-cdk-lib/aws-dynamodb");
 const lambda = require("aws-cdk-lib/aws-lambda");
 const { NodejsFunction } = require("aws-cdk-lib/aws-lambda-nodejs");
 const apigateway = require("aws-cdk-lib/aws-apigateway");
@@ -28,6 +28,7 @@ class SrcStack extends Stack {
     const table = new dynamodb.Table(this, "OrdersTable", {
       partitionKey: { name: "orderId", type: dynamodb.AttributeType.STRING },
       stream: dynamodb.StreamViewType.NEW_IMAGE,
+      billingMode: BillingMode.PAY_PER_REQUEST,
     });
 
     // Lambda Function
@@ -40,7 +41,7 @@ class SrcStack extends Stack {
         sourceMap: true,
       },
       environment: {
-        ORDERS_TABLE_NAME: table.tableName
+        ORDERS_TABLE_NAME: table.tableName,
       },
     });
     table.grantWriteData(apiLambda);
