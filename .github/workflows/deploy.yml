@@ -3,7 +3,7 @@ name: Deploy CDK Stack
 on:
   push:
     branches:
-      - main  # Adjust this to the branch you want to trigger deployments from
+      - main
 
 jobs:
   deploy:
@@ -27,7 +27,7 @@ jobs:
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: us-east-1  # Replace with your AWS region
+        aws-region: us-east-1 
 
     - name: Deploy CDK stack
       run: npx cdk deploy --require-approval never

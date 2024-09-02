@@ -1,4 +1,4 @@
-const { Stack, Duration } = require("aws-cdk-lib");
+const { Stack } = require("aws-cdk-lib");
 const dynamodb = require("aws-cdk-lib/aws-dynamodb");
 const lambda = require("aws-cdk-lib/aws-lambda");
 const { NodejsFunction } = require("aws-cdk-lib/aws-lambda-nodejs");
@@ -27,7 +27,7 @@ class SrcStack extends Stack {
     // Orders DynamoDB Table
     const table = new dynamodb.Table(this, "OrdersTable", {
       partitionKey: { name: "orderId", type: dynamodb.AttributeType.STRING },
-      stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES,
+      stream: dynamodb.StreamViewType.NEW_IMAGE,
     });
 
     // Lambda Function
