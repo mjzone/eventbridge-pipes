@@ -113,6 +113,25 @@ class SrcStack extends Stack {
         },
       },
       target: eventBus.eventBusArn,
+      targetParameters: {
+        eventBridgeEventBusParameters: {
+          detailType: "order-created",
+          source: "mjstore.orders"
+        },
+        inputTemplate: JSON.stringify({
+          orderId: "$.dynamodb.NewImage.orderId.S",
+          passengerId: "$.dynamodb.NewImage.passengerId.S",
+          passengerName: "$.dynamodb.NewImage.passengerName.S",
+          email: "$.dynamodb.NewImage.email.S",
+          flightId: "$.dynamodb.NewImage.flightId.S",
+          flightDetails: "$.dynamodb.NewImage.flightDetails.M",
+          items: "$.dynamodb.NewImage.items.L",
+          metadata: {
+            status: "order-created",
+            createdAt: "$$.Timestamp",
+          }
+        })
+      },
       loggingConfig: {
         cloudWatchLogGroupArn: pipeLogGroup.logGroupArn,
       },
