@@ -29,4 +29,4 @@ jobs:
         aws-region: us-east-1  # Replace with your AWS region
 
     - name: Deploy CDK stack
-      run: npx cdk deploy --require-approval never
+      run: npx cdk deploy --require-approval never --app "node src/bin/src.js"
