@@ -1,26 +1,17 @@
-const { Stack } = require("aws-cdk-lib");
-const dynamodb = require("aws-cdk-lib/aws-dynamodb");
-const lambda = require("aws-cdk-lib/aws-lambda");
-const { NodejsFunction } = require("aws-cdk-lib/aws-lambda-nodejs");
+const cdk = require("aws-cdk-lib");
 const apigateway = require("aws-cdk-lib/aws-apigateway");
-const { EventBus, Rule } = require("aws-cdk-lib/aws-events");
-const { CfnPipe } = require("aws-cdk-lib/aws-pipes");
-const { LogGroup } = require("aws-cdk-lib/aws-logs");
-const { CloudWatchLogGroup } = require("aws-cdk-lib/aws-events-targets");
-const {
-  Role,
-  ServicePrincipal,
-  PolicyStatement,
-} = require("aws-cdk-lib/aws-iam");
+const lambda = require("aws-cdk-lib/aws-lambda");
+const dynamodb = require("aws-cdk-lib/aws-dynamodb");
+const pipes = require("aws-cdk-lib/aws-pipes");
+const events = require("aws-cdk-lib/aws-events");
+const targets = require("aws-cdk-lib/aws-events-targets");
+const logs = require("aws-cdk-lib/aws-logs");
+const iam = require("aws-cdk-lib/aws-iam");
+const sqs = require("aws-cdk-lib/aws-sqs");
 const path = require("path");
+const { NodejsFunction } = require("aws-cdk-lib/aws-lambda-nodejs");
 
-class SrcStack extends Stack {
-  /**
-   *
-   * @param {Construct} scope
-   * @param {string} id
-   * @param {StackProps=} props
-   */
+class AirLankaVAS extends cdk.Stack {
   constructor(scope, id, props) {
     super(scope, id, props);
 
@@ -29,6 +20,7 @@ class SrcStack extends Stack {
       partitionKey: { name: "orderId", type: dynamodb.AttributeType.STRING },
       stream: dynamodb.StreamViewType.NEW_IMAGE,
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
     // Lambda Function
@@ -44,63 +36,77 @@ class SrcStack extends Stack {
         ORDERS_TABLE_NAME: table.tableName,
       },
     });
+    //Allow lambda to write to dynamodb
     table.grantWriteData(apiLambda);
 
     // API Gateway
-    const api = new apigateway.LambdaRestApi(this, "ECommerceApi", {
+    const api = new apigateway.LambdaRestApi(this, "AirLankaVASApi", {
       handler: apiLambda,
       proxy: false,
     });
     api.root.addResource("order").addMethod("POST");
 
     // EventBridge event bus
-    const eventBus = new EventBus(this, "OrderEventsBus", {
+    const eventBus = new events.EventBus(this, "OrderEventsBus", {
       eventBusName: "OrderEventsBus",
     });
 
     // Create a CloudWatch Log Group for EventBridge Pipe logs
-    const pipeLogGroup = new LogGroup(this, "EventBridgePipeLogGroup");
-
-    // IAM Role for EventBridge Pipe
-    const pipeRole = new Role(this, "EventBridgePipeRole", {
-      assumedBy: new ServicePrincipal("pipes.amazonaws.com"),
+    const pipeLogGroup = new logs.LogGroup(this, "EventBridgePipeLogGroup", {
+      retention: logs.RetentionDays.ONE_DAY,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
-    // Grant necessary permissions to the EventBridge Pipe Role
-    pipeRole.addToPolicy(
-      new PolicyStatement({
-        actions: [
-          "dynamodb:DescribeStream",
-          "dynamodb:GetRecords",
-          "dynamodb:GetShardIterator",
-          "dynamodb:ListStreams",
-        ],
-        resources: [table.tableStreamArn],
-      })
-    );
+    // Create SQS Queue for DLQ
+    const dlq = new sqs.Queue(this, "OrderEventsDLQ", {
+      retentionPeriod: cdk.Duration.days(14),
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
 
-    pipeRole.addToPolicy(
-      new PolicyStatement({
-        actions: ["events:PutEvents"],
-        resources: [eventBus.eventBusArn],
-      })
-    );
+    // Enrichment Lambda
+    const enrichmentLambda = new NodejsFunction(this, "EnrichmentLambda", {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: "index.handler",
+      entry: path.join(__dirname, "../lambda/enrichment/index.js"),
+      bundling: {
+        minify: true,
+        sourceMap: true,
+      },
+      environment: {
+        ORDERS_TABLE_NAME: table.tableName,
+      },
+    });
+    // Grant DynamoDB read access to the enrichment Lambda if necessary
+    table.grantReadData(enrichmentLambda);
 
-    pipeRole.addToPolicy(
-      new PolicyStatement({
-        actions: ["logs:CreateLogStream", "logs:PutLogEvents"],
-        resources: [pipeLogGroup.logGroupArn],
-      })
-    );
+    // IAM Role for EventBridge Pipe
+    const pipeRole = new iam.Role(this, "EventBridgePipeRole", {
+      assumedBy: new iam.ServicePrincipal("pipes.amazonaws.com"),
+    });
+    // Allow event bridge pipeRole to read from DynamoDB stream
+    table.grantStreamRead(pipeRole);
+    // Allow event bridge pipeRole to put events to the event bus
+    eventBus.grantPutEventsTo(pipeRole);
+    // Allow event bridge pipeRole to write to pipeLogGroup
+    pipeLogGroup.grantWrite(pipeRole);
+    // Allow event bridge pipeRole to send messages to the DLQ
+    dlq.grantSendMessages(pipeRole);
+    // Grant permission for the Pipe to invoke the enrichment Lambda function
+    enrichmentLambda.grantInvoke(pipeRole);
 
     // EventBridge Pipe to route DynamoDB stream INSERT events to EventBridge using CfnPipe
-    new CfnPipe(this, "DynamoDBToEventBridgePipe", {
+    new pipes.CfnPipe(this, "DynamoDBToEventBridgePipe", {
       name: "OrdersPipe",
       roleArn: pipeRole.roleArn,
       source: table.tableStreamArn,
       sourceParameters: {
         dynamoDbStreamParameters: {
           startingPosition: "LATEST",
+          batchSize: 10,
+          maximumRetryAttempts: 0,
+          deadLetterConfig: {
+            arn: dlq.queueArn,
+          },
         },
         filterCriteria: {
           filters: [
@@ -116,52 +122,49 @@ class SrcStack extends Stack {
       targetParameters: {
         eventBridgeEventBusParameters: {
           detailType: "order-created",
-          source: "mjstore.orders"
+          source: "AirLankaVAS.orders",
         },
         inputTemplate: JSON.stringify({
           orderId: "<$.dynamodb.NewImage.orderId.S>",
           passengerId: "<$.dynamodb.NewImage.passengerId.S>",
           passengerName: "<$.dynamodb.NewImage.passengerName.S>",
           email: "<$.dynamodb.NewImage.email.S>",
-          flightId: "<$.dynamodb.NewImage.flightId.S>",
-          flightDetails: "<$.dynamodb.NewImage.flightDetails.M>",
-          items: "<$.dynamodb.NewImage.items.L>",
-        })
+          flightDetails: {
+            flightNumber:
+              "<$.dynamodb.NewImage.flightDetails.M.flightNumber.S>",
+            from: "<$.dynamodb.NewImage.flightDetails.M.from.S>",
+            to: "<$.dynamodb.NewImage.flightDetails.M.to.S>",
+          },
+        }),
       },
-      loggingConfig: {
-        cloudWatchLogGroupArn: pipeLogGroup.logGroupArn,
+      enrichment: enrichmentLambda.functionArn,
+      logConfiguration: {
+        level: "ERROR",
+        cloudwatchLogsLogDestination: {
+          logGroupArn: pipeLogGroup.logGroupArn,
+        },
       },
     });
 
     // Create a CloudWatch Log Group
-    const logGroup = new LogGroup(this, "EventBridgeLogGroup");
-
-    // IAM Role for EventBridge Rule to log to CloudWatch
-    const eventBridgeRuleRole = new Role(this, "EventBridgeRuleRole", {
-      assumedBy: new ServicePrincipal("events.amazonaws.com"),
-    });
-
-    eventBridgeRuleRole.addToPolicy(
-      new PolicyStatement({
-        actions: ["logs:CreateLogStream", "logs:PutLogEvents"],
-        resources: [logGroup.logGroupArn],
-      })
+    const catchAllTargetLogGroup = new logs.LogGroup(
+      this,
+      "EventBridgeLogGroup",
+      {
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+        retention: logs.RetentionDays.ONE_DAY,
+      }
     );
 
-    // Create an EventBridge Rule to log all events
-    new Rule(this, "LogAllEventsRule", {
+    // Create an EventBridge Rule to log all events in the catchAllTargetLogGroup
+    new events.Rule(this, "LogAllEventsRule", {
       eventBus: eventBus,
       eventPattern: {
-        source: [{ exists: true }],
-        "detail-type": [{ exists: true }],
+        source: events.Match.prefix(""), // match any event source that starts with an empty string
       },
-      targets: [
-        new CloudWatchLogGroup(logGroup, {
-          role: eventBridgeRuleRole,
-        }),
-      ],
+      targets: [new targets.CloudWatchLogGroup(catchAllTargetLogGroup)],
     });
   }
 }
 
-module.exports = { SrcStack };
+module.exports = { AirLankaVAS };

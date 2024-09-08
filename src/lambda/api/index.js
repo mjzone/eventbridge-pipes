@@ -9,22 +9,7 @@ const TABLE_NAME = process.env.ORDERS_TABLE_NAME;
 
 export const handler = async (event) => {
   try {
-    // Parse the JSON body from the request
     const body = JSON.parse(event.body);
-
-    // Validate the required fields
-    if (
-      !body.passengerId ||
-      !body.flightId ||
-      !body.totalAmount ||
-      !body.stripePaymentId
-    ) {
-      return {
-        statusCode: 400,
-        body: JSON.stringify({ message: "Missing required fields" }),
-      };
-    }
-    console.log("Payment Validation Successful!");
 
     // Generate a new orderId
     const orderId = randomUUID();
@@ -33,14 +18,13 @@ export const handler = async (event) => {
     const order = {
       orderId: orderId,
       passengerId: body?.passengerId,
-      passengerName: body?.passengerName || "N/A",
-      email: body?.email || "N/A",
-      flightId: body?.flightId,
+      passengerName: body?.passengerName || "",
+      email: body?.email || "",
       flightDetails: body?.flightDetails || {},
       totalAmount: body?.totalAmount,
+      items: body?.items || [],
       paymentStatus: "succeeded",
       stripePaymentId: body?.stripePaymentId,
-      items: body?.items || [],
       createdAt: new Date().toISOString(),
     };
 

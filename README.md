@@ -5,7 +5,7 @@
 
 1. **Clone the repository**:
    ```bash
-   git clone https://github.com/your-username/my-cdk-app.git
+   git clone https://github.com/mjzone/eventbridge-pipes.git
 
 
 2. **Install dependencies**:
