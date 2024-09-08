@@ -124,22 +124,22 @@ class AirLankaVAS extends cdk.Stack {
           detailType: "order-created",
           source: "AirLankaVAS.orders",
         },
-        inputTemplate: JSON.stringify({
-          orderId: "<$.dynamodb.NewImage.orderId.S>",
-          passengerId: "<$.dynamodb.NewImage.passengerId.S>",
-          passengerName: "<$.dynamodb.NewImage.passengerName.S>",
-          email: "<$.dynamodb.NewImage.email.S>",
-          flightDetails: {
-            flightNumber:
-              "<$.dynamodb.NewImage.flightDetails.M.flightNumber.S>",
-            from: "<$.dynamodb.NewImage.flightDetails.M.from.S>",
-            to: "<$.dynamodb.NewImage.flightDetails.M.to.S>",
-          },
-        }),
+        // inputTemplate: JSON.stringify({
+        //   orderId: "<$.dynamodb.NewImage.orderId.S>",
+        //   passengerId: "<$.dynamodb.NewImage.passengerId.S>",
+        //   passengerName: "<$.dynamodb.NewImage.passengerName.S>",
+        //   email: "<$.dynamodb.NewImage.email.S>",
+        //   flightDetails: {
+        //     flightNumber:
+        //       "<$.dynamodb.NewImage.flightDetails.M.flightNumber.S>",
+        //     from: "<$.dynamodb.NewImage.flightDetails.M.from.S>",
+        //     to: "<$.dynamodb.NewImage.flightDetails.M.to.S>",
+        //   },
+        // }),
       },
       enrichment: enrichmentLambda.functionArn,
       logConfiguration: {
-        level: "ERROR",
+        level: "ERROR", //INFO, TRACE,
         cloudwatchLogsLogDestination: {
           logGroupArn: pipeLogGroup.logGroupArn,
         },
@@ -168,3 +168,4 @@ class AirLankaVAS extends cdk.Stack {
 }
 
 module.exports = { AirLankaVAS };
+
