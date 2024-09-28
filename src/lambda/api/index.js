@@ -23,6 +23,7 @@ export const handler = async (event) => {
       flightDetails: body?.flightDetails || {},
       totalAmount: body?.totalAmount,
       items: body?.items || [],
+      notificationChannel: body?.notificationChannel || "EMAIL",
       paymentStatus: "succeeded",
       stripePaymentId: body?.stripePaymentId,
       createdAt: new Date().toISOString(),

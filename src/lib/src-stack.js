@@ -8,6 +8,9 @@ const targets = require("aws-cdk-lib/aws-events-targets");
 const logs = require("aws-cdk-lib/aws-logs");
 const iam = require("aws-cdk-lib/aws-iam");
 const sqs = require("aws-cdk-lib/aws-sqs");
+const stepfunctions = require("aws-cdk-lib/aws-stepfunctions");
+const tasks = require("aws-cdk-lib/aws-stepfunctions-tasks");
+const sns = require("aws-cdk-lib/aws-sns");
 const path = require("path");
 const { NodejsFunction } = require("aws-cdk-lib/aws-lambda-nodejs");
 
@@ -15,7 +18,7 @@ class AirLankaVAS extends cdk.Stack {
   constructor(scope, id, props) {
     super(scope, id, props);
 
-    // Orders DynamoDB Table
+    // --------- EventBridge Pipe Source: DynamoDB Table -------
     const table = new dynamodb.Table(this, "OrdersTable", {
       partitionKey: { name: "orderId", type: dynamodb.AttributeType.STRING },
       stream: dynamodb.StreamViewType.NEW_IMAGE,
@@ -23,7 +26,7 @@ class AirLankaVAS extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
-    // Lambda Function
+    // -------------  Lambda behind the API Gateway ------------
     const apiLambda = new NodejsFunction(this, "ApiLambda", {
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: "index.handler",
@@ -36,34 +39,28 @@ class AirLankaVAS extends cdk.Stack {
         ORDERS_TABLE_NAME: table.tableName,
       },
     });
-    //Allow lambda to write to dynamodb
     table.grantWriteData(apiLambda);
 
-    // API Gateway
+    // -------------------- API Gateway ----------------------------
     const api = new apigateway.LambdaRestApi(this, "AirLankaVASApi", {
       handler: apiLambda,
       proxy: false,
     });
     api.root.addResource("order").addMethod("POST");
 
-    // EventBridge event bus
-    const eventBus = new events.EventBus(this, "OrderEventsBus", {
-      eventBusName: "OrderEventsBus",
-    });
-
-    // Create a CloudWatch Log Group for EventBridge Pipe logs
+    // ------------------- EventBridge Pipe Log Group --------------
     const pipeLogGroup = new logs.LogGroup(this, "EventBridgePipeLogGroup", {
       retention: logs.RetentionDays.ONE_DAY,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
-    // Create SQS Queue for DLQ
+    // ------------------- EventBridge Pipe DLQ---------------------
     const dlq = new sqs.Queue(this, "OrderEventsDLQ", {
       retentionPeriod: cdk.Duration.days(14),
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
-    // Enrichment Lambda
+    // ------------ EventBridge Pipe Enrichment Lambda --------------
     const enrichmentLambda = new NodejsFunction(this, "EnrichmentLambda", {
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: "index.handler",
@@ -76,25 +73,24 @@ class AirLankaVAS extends cdk.Stack {
         ORDERS_TABLE_NAME: table.tableName,
       },
     });
-    // Grant DynamoDB read access to the enrichment Lambda if necessary
     table.grantReadData(enrichmentLambda);
 
-    // IAM Role for EventBridge Pipe
+    // ------------ EventBridge Pipe Target: Event Bus -----------------
+    const eventBus = new events.EventBus(this, "OrderEventsBus", {
+      eventBusName: "OrderEventsBus",
+    });
+
+    // ---------------- EventBridge Pipe IAM Role ----------------------
     const pipeRole = new iam.Role(this, "EventBridgePipeRole", {
       assumedBy: new iam.ServicePrincipal("pipes.amazonaws.com"),
     });
-    // Allow event bridge pipeRole to read from DynamoDB stream
     table.grantStreamRead(pipeRole);
-    // Allow event bridge pipeRole to put events to the event bus
     eventBus.grantPutEventsTo(pipeRole);
-    // Allow event bridge pipeRole to write to pipeLogGroup
     pipeLogGroup.grantWrite(pipeRole);
-    // Allow event bridge pipeRole to send messages to the DLQ
     dlq.grantSendMessages(pipeRole);
-    // Grant permission for the Pipe to invoke the enrichment Lambda function
     enrichmentLambda.grantInvoke(pipeRole);
 
-    // EventBridge Pipe to route DynamoDB stream INSERT events to EventBridge using CfnPipe
+    // -------------------- EventBridge Pipe ----------------------------
     new pipes.CfnPipe(this, "DynamoDBToEventBridgePipe", {
       name: "OrdersPipe",
       roleArn: pipeRole.roleArn,
@@ -124,29 +120,17 @@ class AirLankaVAS extends cdk.Stack {
           detailType: "order-created",
           source: "AirLankaVAS.orders",
         },
-        // inputTemplate: JSON.stringify({
-        //   orderId: "<$.dynamodb.NewImage.orderId.S>",
-        //   passengerId: "<$.dynamodb.NewImage.passengerId.S>",
-        //   passengerName: "<$.dynamodb.NewImage.passengerName.S>",
-        //   email: "<$.dynamodb.NewImage.email.S>",
-        //   flightDetails: {
-        //     flightNumber:
-        //       "<$.dynamodb.NewImage.flightDetails.M.flightNumber.S>",
-        //     from: "<$.dynamodb.NewImage.flightDetails.M.from.S>",
-        //     to: "<$.dynamodb.NewImage.flightDetails.M.to.S>",
-        //   },
-        // }),
       },
       enrichment: enrichmentLambda.functionArn,
       logConfiguration: {
-        level: "ERROR", //INFO, TRACE,
+        level: "ERROR",
         cloudwatchLogsLogDestination: {
           logGroupArn: pipeLogGroup.logGroupArn,
         },
       },
     });
 
-    // Create a CloudWatch Log Group
+    // -------------- Event Bus Target: CloudWatch Log Group -------------
     const catchAllTargetLogGroup = new logs.LogGroup(
       this,
       "EventBridgeLogGroup",
@@ -156,16 +140,171 @@ class AirLankaVAS extends cdk.Stack {
       }
     );
 
-    // Create an EventBridge Rule to log all events in the catchAllTargetLogGroup
+    // ----------- Event Bus Rule: CloudWatch Log Group Rule -------------
     new events.Rule(this, "LogAllEventsRule", {
       eventBus: eventBus,
       eventPattern: {
-        source: events.Match.prefix(""), // match any event source that starts with an empty string
+        source: events.Match.prefix(""),
       },
       targets: [new targets.CloudWatchLogGroup(catchAllTargetLogGroup)],
+    });
+
+    // --------------- Step Function: Pass State -------------------------
+    const passState = new stepfunctions.Pass(this, "PassState", {
+      result: stepfunctions.Result.fromObject({
+        message: "Order processing initiated",
+      }),
+      resultPath: "$.passStateResult",
+    });
+
+    // ------------------ Step Function: Lambda Function ------------------
+    const processOrderLambda = new NodejsFunction(this, "ProcessOrderLambda", {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: "index.handler",
+      entry: path.join(__dirname, "../lambda/process-order/index.js"),
+      bundling: {
+        minify: true,
+        sourceMap: true,
+      },
+      environment: {
+        EVENT_BUS_NAME: eventBus.eventBusName,
+      },
+    });
+    eventBus.grantPutEventsTo(processOrderLambda);
+
+    // ---------------- Step Function: Lambda Invoke Step ------------------
+    const processOrderStep = new tasks.LambdaInvoke(this, "ProcessOrderStep", {
+      lambdaFunction: processOrderLambda,
+      payload: stepfunctions.TaskInput.fromJsonPathAt("$"),
+      resultPath: "$.processOrderResult",
+    });
+
+    // ---------------- Event Bus Target: Step Function Workflow ------------
+    const orderProcessingWorkflow = new stepfunctions.StateMachine(
+      this,
+      "OrderProcessingWorkflow",
+      {
+        definitionBody: stepfunctions.DefinitionBody.fromChainable(
+          passState.next(processOrderStep)
+        ),
+        timeout: cdk.Duration.minutes(5),
+        tracingEnabled: true,
+      }
+    );
+
+    // ----------------------- Event Bus: IAM Role --------------------------
+    const eventBridgeRole = new iam.Role(this, "EventBridgeRole", {
+      assumedBy: new iam.ServicePrincipal("events.amazonaws.com"),
+    });
+    orderProcessingWorkflow.grantStartExecution(eventBridgeRole);
+
+    // ------------ Event Bus Rule: Step Function ----------------------------
+    new events.Rule(this, "OrderCreatedRule", {
+      eventBus: eventBus,
+      eventPattern: {
+        source: ["AirLankaVAS.orders"],
+        detailType: ["order-created"],
+      },
+      targets: [
+        new targets.SfnStateMachine(orderProcessingWorkflow, {
+          role: eventBridgeRole,
+          input: events.RuleTargetInput.fromObject({
+            orderId: events.EventField.fromPath("$.detail.orderId"),
+            passengerId: events.EventField.fromPath("$.detail.passengerId"),
+            passengerName: events.EventField.fromPath("$.detail.passengerName"),
+            email: events.EventField.fromPath("$.detail.email"),
+            notificationChannel: events.EventField.fromPath(
+              "$.detail.notificationChannel"
+            ),
+            flightId: events.EventField.fromPath("$.detail.flightId"),
+            flightDetails: events.EventField.fromPath("$.detail.flightDetails"),
+            items: events.EventField.fromPath("$.detail.items"),
+          }),
+        }),
+      ],
+    });
+
+    // ----------------- Event Bus Target: SNS Topic ---------------------
+    const notificationTopic = new sns.Topic(this, "OrderNotificationTopic", {
+      displayName: "Order Notification Topic",
+      topicName: "OrderNotificationTopic",
+    });
+
+    // ------------------- Event Bus Rule: SNS Topic ----------------------
+    new events.Rule(this, "OrderCompleteEmailNotificationRule", {
+      eventBus: eventBus,
+      eventPattern: {
+        source: ["AirLankaVAS.orders"],
+        detailType: ["order-complete"],
+        detail: {
+          notificationChannel: ["EMAIL"],
+        },
+      },
+      targets: [
+        new targets.SnsTopic(notificationTopic, {
+          message: events.RuleTargetInput.fromObject({
+            subject: "Order Complete Notification",
+            message: events.EventField.fromPath("$.detail"),
+          }),
+        }),
+      ],
+    });
+
+    // ----------------------- Event Bus Target: SQS Queue ---------------------
+    const loyaltyPointsQueue = new sqs.Queue(this, "LoyaltyPointsQueue", {
+      queueName: "LoyaltyPointsQueue",
+      retentionPeriod: cdk.Duration.days(14),
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    // ------------------- Event Bus Rule: SQS Queue ----------------------
+    new events.Rule(this, "OrderCompleteLoyaltyPointsRule", {
+      eventBus: eventBus,
+      eventPattern: {
+        source: ["AirLankaVAS.orders"],
+        detailType: ["order-complete"],
+        detail: {
+          notificationChannel: ["EMAIL", "SMS"],
+        },
+      },
+      targets: [
+        new targets.SqsQueue(loyaltyPointsQueue, {
+          message: events.RuleTargetInput.fromObject({
+            detailType: events.EventField.fromPath("$.detailType"),
+            notificationChannel: events.EventField.fromPath(
+              "$.detail.notificationChannel"
+            ),
+            orderId: events.EventField.fromPath("$.detail.orderId"),
+            passengerId: events.EventField.fromPath("$.detail.passengerId"),
+            passengerName: events.EventField.fromPath("$.detail.passengerName"),
+            email: events.EventField.fromPath("$.detail.email"),
+            flightId: events.EventField.fromPath("$.detail.flightId"),
+            flightDetails: events.EventField.fromPath("$.detail.flightDetails"),
+            items: events.EventField.fromPath("$.detail.items"),
+          }),
+        }),
+      ],
+    });
+
+    // ----------------------------- Outputs ---------------------------------
+    new cdk.CfnOutput(this, "ApiGatewayUrl", {
+      value: api.url,
+      description: "The URL of the AirLankaVAS API Gateway",
+      exportName: "AirLankaVASApiGatewayUrl",
+    });
+
+    new cdk.CfnOutput(this, "EmailNotificationTopicArn", {
+      value: notificationTopic.topicArn,
+      description: "The ARN of the Email Notification SNS Topic",
+      exportName: "EmailNotificationTopicArn",
+    });
+
+    new cdk.CfnOutput(this, "LoyaltyPointsQueueUrl", {
+      value: loyaltyPointsQueue.queueUrl,
+      description: "The URL of the Loyalty Points SQS Queue",
+      exportName: "LoyaltyPointsQueueUrl",
     });
   }
 }
 
 module.exports = { AirLankaVAS };
-

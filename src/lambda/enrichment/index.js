@@ -18,6 +18,7 @@ exports.handler = async (event) => {
       email: newItem.email,
       items: newItem.items,
       flightDetails: newItem.flightDetails,
+      notificationChannel: newItem.notificationChannel,
       enrichedAttribute: "This is an enriched value",
       enrichmentTimestamp: new Date().toISOString(),
     };
