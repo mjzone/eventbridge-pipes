@@ -7,6 +7,8 @@ const eventBridgeClient = new EventBridgeClient();
 
 export const handler = async (event) => {
   console.log("Order processed successfully", event);
+  // calling stripe to charge the customer
+  // do other stuff related to the order
 
   const params = {
     Entries: [
@@ -20,22 +22,11 @@ export const handler = async (event) => {
   };
 
   try {
-    const result = await eventBridgeClient.send(new PutEventsCommand(params));
-    console.log("Event published successfully", result);
-
-    return {
-      statusCode: 200,
-      body: JSON.stringify({
-        message: "Order processed and event published successfully",
-      }),
-    };
+    await eventBridgeClient.send(new PutEventsCommand(params));
+    console.log("Event published successfully");
+    return "Order processed and event published successfully";
   } catch (error) {
     console.error("Failed to publish event", error);
-    return {
-      statusCode: 500,
-      body: JSON.stringify({
-        message: "Failed to process the order and publish event",
-      }),
-    };
+    return "Failed to process the order and publish event";
   }
 };

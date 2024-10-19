@@ -11,6 +11,7 @@ const sqs = require("aws-cdk-lib/aws-sqs");
 const stepfunctions = require("aws-cdk-lib/aws-stepfunctions");
 const tasks = require("aws-cdk-lib/aws-stepfunctions-tasks");
 const sns = require("aws-cdk-lib/aws-sns");
+const snsSubscriptions = require("aws-cdk-lib/aws-sns-subscriptions");
 const path = require("path");
 const { NodejsFunction } = require("aws-cdk-lib/aws-lambda-nodejs");
 
@@ -18,7 +19,7 @@ class AirLankaVAS extends cdk.Stack {
   constructor(scope, id, props) {
     super(scope, id, props);
 
-    // --------- EventBridge Pipe Source: DynamoDB Table -------
+    // --------- EventBridge Pipe Source: DynamoDB Table -----------
     const table = new dynamodb.Table(this, "OrdersTable", {
       partitionKey: { name: "orderId", type: dynamodb.AttributeType.STRING },
       stream: dynamodb.StreamViewType.NEW_IMAGE,
@@ -26,7 +27,7 @@ class AirLankaVAS extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
-    // -------------  Lambda behind the API Gateway ------------
+    // -------------  Lambda behind the API Gateway ----------------
     const apiLambda = new NodejsFunction(this, "ApiLambda", {
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: "index.handler",
@@ -75,12 +76,12 @@ class AirLankaVAS extends cdk.Stack {
     });
     table.grantReadData(enrichmentLambda);
 
-    // ------------ EventBridge Pipe Target: Event Bus -----------------
-    const eventBus = new events.EventBus(this, "OrderEventsBus", {
+    // ------------ EventBridge Pipe Target: Event Bus ---------------
+    const eventBus = new events.EventBus(this, "OrderEventBus", {
       eventBusName: "OrderEventsBus",
     });
 
-    // ---------------- EventBridge Pipe IAM Role ----------------------
+    // ---------------- EventBridge Pipe IAM Role --------------------
     const pipeRole = new iam.Role(this, "EventBridgePipeRole", {
       assumedBy: new iam.ServicePrincipal("pipes.amazonaws.com"),
     });
@@ -90,7 +91,7 @@ class AirLankaVAS extends cdk.Stack {
     dlq.grantSendMessages(pipeRole);
     enrichmentLambda.grantInvoke(pipeRole);
 
-    // -------------------- EventBridge Pipe ----------------------------
+    // -------------------- EventBridge Pipe -----------------------------
     new pipes.CfnPipe(this, "DynamoDBToEventBridgePipe", {
       name: "OrdersPipe",
       roleArn: pipeRole.roleArn,
@@ -157,7 +158,7 @@ class AirLankaVAS extends cdk.Stack {
       resultPath: "$.passStateResult",
     });
 
-    // ------------------ Step Function: Lambda Function ------------------
+    // ------------------ Step Function: Lambda Function -----------------
     const processOrderLambda = new NodejsFunction(this, "ProcessOrderLambda", {
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: "index.handler",
@@ -172,14 +173,14 @@ class AirLankaVAS extends cdk.Stack {
     });
     eventBus.grantPutEventsTo(processOrderLambda);
 
-    // ---------------- Step Function: Lambda Invoke Step ------------------
+    // ---------------- Step Function: Lambda Invoke Step ----------------
     const processOrderStep = new tasks.LambdaInvoke(this, "ProcessOrderStep", {
       lambdaFunction: processOrderLambda,
       payload: stepfunctions.TaskInput.fromJsonPathAt("$"),
       resultPath: "$.processOrderResult",
     });
 
-    // ---------------- Event Bus Target: Step Function Workflow ------------
+    // ---------------- Event Bus Target: Step Function Workflow ----------
     const orderProcessingWorkflow = new stepfunctions.StateMachine(
       this,
       "OrderProcessingWorkflow",
@@ -192,13 +193,13 @@ class AirLankaVAS extends cdk.Stack {
       }
     );
 
-    // ----------------------- Event Bus: IAM Role --------------------------
+    // ----------------------- Event Bus: IAM Role ------------------------
     const eventBridgeRole = new iam.Role(this, "EventBridgeRole", {
       assumedBy: new iam.ServicePrincipal("events.amazonaws.com"),
     });
     orderProcessingWorkflow.grantStartExecution(eventBridgeRole);
 
-    // ------------ Event Bus Rule: Step Function ----------------------------
+    // ------------ Event Bus Rule: Step Function --------------------------
     new events.Rule(this, "OrderCreatedRule", {
       eventBus: eventBus,
       eventPattern: {
@@ -224,40 +225,41 @@ class AirLankaVAS extends cdk.Stack {
       ],
     });
 
-    // ----------------- Event Bus Target: SNS Topic ---------------------
-    const notificationTopic = new sns.Topic(this, "OrderNotificationTopic", {
+    // ----------------- Event Bus Target: SNS Topic -----------------------
+    let notificationTopic = new sns.Topic(this, "OrderNotificationTopic", {
       displayName: "Order Notification Topic",
       topicName: "OrderNotificationTopic",
     });
 
-    // ------------------- Event Bus Rule: SNS Topic ----------------------
-    new events.Rule(this, "OrderCompleteEmailNotificationRule", {
-      eventBus: eventBus,
-      eventPattern: {
-        source: ["AirLankaVAS.orders"],
-        detailType: ["order-complete"],
-        detail: {
-          notificationChannel: ["EMAIL"],
-        },
-      },
-      targets: [
-        new targets.SnsTopic(notificationTopic, {
-          message: events.RuleTargetInput.fromObject({
-            subject: "Order Complete Notification",
-            message: events.EventField.fromPath("$.detail"),
-          }),
-        }),
-      ],
-    });
+    // ------------------- Event Bus Rule: SNS Topic -----------------------
+    // new events.Rule(this, "OrderCompleteEmailNotificationRule", {
+    //   eventBus: eventBus,
+    //   eventPattern: {
+    //     source: ["AirLankaVAS.orders"],
+    //     detailType: ["order-complete"],
+    //     detail: {
+    //       notificationChannel: ["EMAIL"],
+    //     },
+    //   },
+    //   targets: [
+    //     new targets.SnsTopic(notificationTopic, {
+    //       message: events.RuleTargetInput.fromObject({
+    //         subject: "Order Complete Notification",
+    //         message: events.EventField.fromPath("$.detail"),
+    //       }),
+    //     }),
+    //   ],
+    // });
 
-    // ----------------------- Event Bus Target: SQS Queue ---------------------
+    // ----------------------- Event Bus Target: SQS Queue -----------------
+    
     const loyaltyPointsQueue = new sqs.Queue(this, "LoyaltyPointsQueue", {
       queueName: "LoyaltyPointsQueue",
-      retentionPeriod: cdk.Duration.days(14),
+      retentionPeriod: cdk.Duration.days(10),
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
-    // ------------------- Event Bus Rule: SQS Queue ----------------------
+    // ------------------- Event Bus Rule: SQS Queue -----------------------
     new events.Rule(this, "OrderCompleteLoyaltyPointsRule", {
       eventBus: eventBus,
       eventPattern: {
@@ -286,23 +288,96 @@ class AirLankaVAS extends cdk.Stack {
       ],
     });
 
-    // ----------------------------- Outputs ---------------------------------
+    // Lambda function to notify
+    const notifyLambda = new NodejsFunction(this, "NotifyLambdaLambda", {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: "index.handler",
+      entry: path.join(__dirname, "../lambda/notify/index.js"),
+      bundling: {
+        minify: true,
+        sourceMap: true,
+      },
+    });
+
+    const schedulerRole = new iam.Role(this, "SchedulerInvokeLambdaRole", {
+      assumedBy: new iam.ServicePrincipal("scheduler.amazonaws.com")
+    });
+    // Grant permission to the notifyLambda
+    notifyLambda.grantInvoke(schedulerRole);
+
+    const schedulingLambdaRole = new iam.Role(this, "SchedulerLambdaRole", {
+      assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName(
+          "service-role/AWSLambdaBasicExecutionRole"
+        ),
+        iam.ManagedPolicy.fromAwsManagedPolicyName(
+          "AmazonEventBridgeSchedulerFullAccess"
+        ),
+      ],
+    });
+
+    // Create the DLQ for Scheduler
+    const schedulerDLQ = new sqs.Queue(this, "SchedulerDLQ", {
+      queueName: "SchedulerDLQ",
+      retentionPeriod: cdk.Duration.days(14), // Retain messages for up to 14 days
+    });
+    // Grant permission for EventBridge Scheduler to send messages to the DLQ
+    schedulerDLQ.grantSendMessages(
+      new iam.ServicePrincipal("scheduler.amazonaws.com")
+    );
+
+    // Lambda function to handle SNS messages and schedule EventBridge events
+    const schedulingLambda = new NodejsFunction(this, "ScheduleEventLambda", {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: "index.handler",
+      entry: path.join(__dirname, "../lambda/schedule-event/index.js"),
+      bundling: {
+        minify: true,
+        sourceMap: true,
+      },
+      environment: {
+        SCHEDULER_ROLE_ARN: schedulerRole.roleArn,
+        NOTIFY_LAMBDA_ARN: notifyLambda.functionArn,
+        SCHEDULER_DLQ_ARN: schedulerDLQ.queueArn,
+      },
+      role: schedulingLambdaRole,
+    });
+
+    // ------------------- Event Bus Rule: Schedule Notification Rule -----------------------
+    new events.Rule(this, "ScheduleNotificationRule", {
+      eventBus: eventBus,
+      eventPattern: {
+        source: ["AirLankaVAS.orders"],
+        detailType: ["order-complete"],
+        detail: {
+          notificationChannel: ["EMAIL", "SMS"],
+        },
+      },
+      targets: [
+        new targets.LambdaFunction(schedulingLambda, {
+          event: events.RuleTargetInput.fromObject({
+            detailType: events.EventField.fromPath("$.detailType"),
+            notificationChannel: events.EventField.fromPath(
+              "$.detail.notificationChannel"
+            ),
+            orderId: events.EventField.fromPath("$.detail.orderId"),
+            passengerId: events.EventField.fromPath("$.detail.passengerId"),
+            passengerName: events.EventField.fromPath("$.detail.passengerName"),
+            email: events.EventField.fromPath("$.detail.email"),
+            flightId: events.EventField.fromPath("$.detail.flightId"),
+            flightDetails: events.EventField.fromPath("$.detail.flightDetails"),
+            items: events.EventField.fromPath("$.detail.items"),
+          }),
+        }),
+      ],
+    });
+
+    // ----------------------------- Outputs --------------------------------
     new cdk.CfnOutput(this, "ApiGatewayUrl", {
       value: api.url,
       description: "The URL of the AirLankaVAS API Gateway",
       exportName: "AirLankaVASApiGatewayUrl",
-    });
-
-    new cdk.CfnOutput(this, "EmailNotificationTopicArn", {
-      value: notificationTopic.topicArn,
-      description: "The ARN of the Email Notification SNS Topic",
-      exportName: "EmailNotificationTopicArn",
-    });
-
-    new cdk.CfnOutput(this, "LoyaltyPointsQueueUrl", {
-      value: loyaltyPointsQueue.queueUrl,
-      description: "The URL of the Loyalty Points SQS Queue",
-      exportName: "LoyaltyPointsQueueUrl",
     });
   }
 }
